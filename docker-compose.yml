@@ -1,0 +1,24 @@
+services:
+  db:
+    image: mariadb:11.4
+    container_name: fitbit-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: fitbit_root_pass
+      MYSQL_DATABASE: fitbit
+      MYSQL_USER: fitbit_user
+      MYSQL_PASSWORD: fitbit_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodbs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mariadb_data:
+    driver: local

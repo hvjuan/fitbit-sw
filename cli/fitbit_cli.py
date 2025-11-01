@@ -18,7 +18,7 @@ import lib.client
 
 
 DEFAULT_TOKEN_FILE = '.fitbit_tokens.json'
-DEFAULT_SCOPES = ['activity', 'heartrate', 'profile']
+DEFAULT_SCOPES = ['activity', 'heartrate', 'profile', 'sleep']
 
 
 @click.group()
@@ -330,6 +330,132 @@ def devices(client_id, client_secret, redirect_url, token_file):
         click.echo(json.dumps(devices_data, indent=2))
     except Exception as e:
         click.echo(f'✗ Failed to get devices: {str(e)}', err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    '--client-id',
+    envvar='FITBIT_CLIENT_ID',
+    required=True,
+    help='Fitbit OAuth 2.0 client ID.',
+)
+@click.option(
+    '--client-secret',
+    envvar='FITBIT_CLIENT_SECRET',
+    required=True,
+    help='Fitbit OAuth 2.0 client secret.',
+)
+@click.option(
+    '--redirect-url',
+    envvar='FITBIT_REDIRECT_URL',
+    default='http://localhost:8080/redirect',
+    help='OAuth 2.0 redirect URL.',
+)
+@click.option(
+    '--token-file',
+    default=DEFAULT_TOKEN_FILE,
+    help='File containing authentication tokens.',
+)
+@click.option(
+    '--date',
+    default='today',
+    help='Date for sleep data (YYYY-MM-DD or "today").',
+)
+@click.option(
+    '--output',
+    default='sleep_data.json',
+    help='Output file for sleep data.',
+)
+def download_sleep(
+    client_id,
+    client_secret,
+    redirect_url,
+    token_file,
+    date,
+    output,
+):
+    """Download sleep data for a specific date."""
+    auth = _load_auth(client_id, client_secret, redirect_url, token_file)
+    client = lib.client.FitbitClient(auth)
+
+    click.echo(f'Downloading sleep data for {date}...')
+
+    try:
+        sleep_data = client.get_sleep_log(date)
+
+        with open(output, 'w') as f:
+            json.dump(sleep_data, f, indent=2)
+
+        click.echo(f'✓ Sleep data saved to {output}')
+    except Exception as e:
+        click.echo(f'✗ Failed to download sleep data: {str(e)}', err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    '--client-id',
+    envvar='FITBIT_CLIENT_ID',
+    required=True,
+    help='Fitbit OAuth 2.0 client ID.',
+)
+@click.option(
+    '--client-secret',
+    envvar='FITBIT_CLIENT_SECRET',
+    required=True,
+    help='Fitbit OAuth 2.0 client secret.',
+)
+@click.option(
+    '--redirect-url',
+    envvar='FITBIT_REDIRECT_URL',
+    default='http://localhost:8080/redirect',
+    help='OAuth 2.0 redirect URL.',
+)
+@click.option(
+    '--token-file',
+    default=DEFAULT_TOKEN_FILE,
+    help='File containing authentication tokens.',
+)
+@click.option(
+    '--start-date',
+    required=True,
+    help='Start date (YYYY-MM-DD format).',
+)
+@click.option(
+    '--end-date',
+    required=True,
+    help='End date (YYYY-MM-DD format).',
+)
+@click.option(
+    '--output',
+    default='sleep_range_data.json',
+    help='Output file for sleep data.',
+)
+def download_sleep_range(
+    client_id,
+    client_secret,
+    redirect_url,
+    token_file,
+    start_date,
+    end_date,
+    output,
+):
+    """Download sleep data for a date range."""
+    auth = _load_auth(client_id, client_secret, redirect_url, token_file)
+    client = lib.client.FitbitClient(auth)
+
+    click.echo(f'Downloading sleep data from {start_date} to {end_date}...')
+
+    try:
+        sleep_data = client.get_sleep_log_range(start_date, end_date)
+
+        with open(output, 'w') as f:
+            json.dump(sleep_data, f, indent=2)
+
+        click.echo(f'✓ Sleep data saved to {output}')
+    except Exception as e:
+        click.echo(f'✗ Failed to download sleep data: {str(e)}', err=True)
         sys.exit(1)
 
 

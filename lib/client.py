@@ -169,3 +169,48 @@ class FitbitClient:
         """
         endpoint = f'/user/-/activities/date/{date}.json'
         return self._make_request('GET', endpoint)
+
+    def get_sleep_log(self, date: str) -> Dict[str, Any]:
+        """Get sleep log for a specific date.
+
+        Args:
+            date: Date in format YYYY-MM-DD or 'today'.
+
+        Returns:
+            Sleep log data including stages, duration, and efficiency.
+        """
+        endpoint = f'/user/-/sleep/date/{date}.json'
+        return self._make_request('GET', endpoint)
+
+    def get_sleep_log_range(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> Dict[str, Any]:
+        """Get sleep logs for a date range.
+
+        Args:
+            start_date: Start date in format YYYY-MM-DD.
+            end_date: End date in format YYYY-MM-DD.
+
+        Returns:
+            Sleep logs for the date range.
+        """
+        params = {
+            'beforeDate': end_date,
+            'afterDate': start_date,
+            'sort': 'asc',
+            'limit': 100,
+            'offset': 0,
+        }
+        endpoint = '/user/-/sleep/list.json'
+        return self._make_request('GET', endpoint, params=params)
+
+    def get_sleep_goal(self) -> Dict[str, Any]:
+        """Get user's sleep goal.
+
+        Returns:
+            Sleep goal data.
+        """
+        endpoint = '/user/-/sleep/goal.json'
+        return self._make_request('GET', endpoint)
