@@ -179,8 +179,24 @@ class FitbitClient:
         Returns:
             Sleep log data including stages, duration, and efficiency.
         """
-        endpoint = f'/user/-/sleep/date/{date}.json'
-        return self._make_request('GET', endpoint)
+        # Use API version 1.2 to get detailed sleep stages (deep, light, rem, wake)
+        endpoint = f'/1.2/user/-/sleep/date/{date}.json'
+        # Override the base URL construction for this endpoint
+        url = f'{self.API_BASE_URL}{endpoint}'
+        
+        headers = {
+            'Authorization': f'Bearer {self.auth.access_token}',
+            'Accept': 'application/json',
+        }
+        
+        response = requests.request(
+            method='GET',
+            url=url,
+            headers=headers,
+        )
+        
+        response.raise_for_status()
+        return response.json()
 
     def get_sleep_log_range(
         self,

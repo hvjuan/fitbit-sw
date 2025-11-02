@@ -192,7 +192,7 @@ class SleepSync:
         Args:
             cursor: Database cursor.
             log_id: Sleep session log ID.
-            minutes_data: List of minute-by-minute sleep stage data.
+            minutes_data: List of sleep stage periods with seconds duration.
             start_time: Sleep session start time.
         """
         # Sleep stage mapping (Fitbit API values to our schema)
@@ -211,25 +211,29 @@ class SleepSync:
         for entry in minutes_data:
             stage = entry.get('level', 'wake').lower()
             sleep_stage = stage_map.get(stage, 0)
-            # Fitbit API returns times in user's local timezone
-            minute_time = datetime.fromisoformat(entry['dateTime'].replace('.000', '').replace('Z', '+00:00'))
+            seconds_duration = entry.get('seconds', 0)
             
-            # If it has timezone info (Z suffix), convert to local
-            if minute_time.tzinfo:
-                ny_tz = ZoneInfo('America/New_York')
-                minute_time = minute_time.astimezone(ny_tz).replace(tzinfo=None)
+            # Parse the start time of this period
+            # Fitbit API returns times in user's local timezone
+            period_start = datetime.fromisoformat(entry['dateTime'].replace('.000', ''))
+            
+            # Generate a record for each minute in this period
+            minutes_in_period = seconds_duration // 60
+            for minute_offset in range(minutes_in_period):
+                from datetime import timedelta
+                minute_time = period_start + timedelta(minutes=minute_offset)
+                
+                params = {
+                    'log_id': log_id,
+                    'minute_time': minute_time,
+                    'sleep_stage': sleep_stage,
+                }
 
-            params = {
-                'log_id': log_id,
-                'minute_time': minute_time,
-                'sleep_stage': sleep_stage,
-            }
-
-            try:
-                cursor.execute(sql, params)
-            except mysql.connector.IntegrityError:
-                # Skip duplicates
-                pass
+                try:
+                    cursor.execute(sql, params)
+                except mysql.connector.IntegrityError:
+                    # Skip duplicates
+                    pass
 
     def _insert_sleep_minutes_classic(self, cursor, log_id: int, minute_data: List[Dict[str, Any]], date_of_sleep: str):
         """Insert minute-by-minute sleep stage data (classic format with minuteData).

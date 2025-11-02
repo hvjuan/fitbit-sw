@@ -175,7 +175,68 @@
           },
           "unit": "bpm"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Heart Rate (Awake)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Heart Rate (Light Sleep)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Heart Rate (Deep Sleep)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Heart Rate (REM)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -206,7 +267,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  datetime as time,\n  heart_rate as value,\n  'Heart Rate (All Day)' as metric\nFROM heart_rate_intraday\nWHERE $__timeFilter(datetime)\nORDER BY datetime",
+          "rawSql": "SELECT\n  h.datetime as time,\n  h.heart_rate as value,\n  'Heart Rate (Awake)' as metric\nFROM heart_rate_intraday h\nLEFT JOIN sleep_minutes s ON h.datetime = s.minute_time\nWHERE $__timeFilter(h.datetime) AND (s.minute_time IS NULL OR s.sleep_stage = 0)\nORDER BY h.datetime",
           "refId": "A",
           "sql": {
             "columns": [
@@ -235,8 +296,66 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  h.datetime as time,\n  h.heart_rate as value,\n  'Heart Rate (During Sleep)' as metric\nFROM heart_rate_intraday h\nINNER JOIN sleep_sessions s ON h.datetime BETWEEN s.start_time AND s.end_time\nWHERE $__timeFilter(h.datetime)\nORDER BY h.datetime",
+          "rawSql": "SELECT\n  h.datetime as time,\n  h.heart_rate as value,\n  'Heart Rate (Light Sleep)' as metric\nFROM heart_rate_intraday h\nINNER JOIN sleep_minutes s ON h.datetime = s.minute_time AND s.sleep_stage = 1\nWHERE $__timeFilter(h.datetime)\nORDER BY h.datetime",
           "refId": "B",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        },
+        {
+          "dataset": "fitbit",
+          "datasource": {
+            "type": "mysql",
+            "uid": "P2ABB19EC46770D68"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  h.datetime as time,\n  h.heart_rate as value,\n  'Heart Rate (Deep Sleep)' as metric\nFROM heart_rate_intraday h\nINNER JOIN sleep_minutes s ON h.datetime = s.minute_time AND s.sleep_stage = 2\nWHERE $__timeFilter(h.datetime)\nORDER BY h.datetime",
+          "refId": "C",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        },
+        {
+          "dataset": "fitbit",
+          "datasource": {
+            "type": "mysql",
+            "uid": "P2ABB19EC46770D68"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  h.datetime as time,\n  h.heart_rate as value,\n  'Heart Rate (REM)' as metric\nFROM heart_rate_intraday h\nINNER JOIN sleep_minutes s ON h.datetime = s.minute_time AND s.sleep_stage = 3\nWHERE $__timeFilter(h.datetime)\nORDER BY h.datetime",
+          "refId": "D",
           "sql": {
             "columns": [
               {
