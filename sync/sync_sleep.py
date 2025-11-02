@@ -73,12 +73,9 @@ class SleepSync:
                 print(f'  ⊙ Sleep session {sleep_session["logId"]} already exists')
                 # Still try to insert minute data if it doesn't exist
                 try:
-                    start_time = datetime.fromisoformat(sleep_session['startTime'].replace('Z', '+00:00'))
+                    start_time = datetime.fromisoformat(sleep_session['startTime'].replace('.000', ''))
                     if 'levels' in sleep_session and 'data' in sleep_session['levels']:
                         self._insert_sleep_minutes(cursor, sleep_session['logId'], sleep_session['levels']['data'], start_time)
-                        print(f'    ✓ Added minute-by-minute data')
-                    elif 'minuteData' in sleep_session:
-                        self._insert_sleep_minutes_classic(cursor, sleep_session['logId'], sleep_session['minuteData'], sleep_session['dateOfSleep'])
                         print(f'    ✓ Added minute-by-minute data')
                 except Exception as e:
                     print(f'    ⊙ Minute data already exists or error: {str(e)}')
@@ -99,16 +96,15 @@ class SleepSync:
         sql = """
             INSERT INTO sleep_sessions (
                 log_id, date_of_sleep, start_time, end_time, duration_ms,
-                efficiency, sleep_score, is_main_sleep, awake_count, awake_duration_ms,
-                awakenings_count, restless_count, restless_duration_ms,
-                time_in_bed_minutes, minutes_asleep, minutes_awake,
-                minutes_to_fall_asleep
+                efficiency, info_code, log_type, sleep_type, sleep_score, is_main_sleep,
+                awakenings_count, time_in_bed_minutes, minutes_asleep, minutes_awake,
+                minutes_to_fall_asleep, minutes_after_wakeup
             ) VALUES (
                 %(log_id)s, %(date_of_sleep)s, %(start_time)s, %(end_time)s, %(duration_ms)s,
-                %(efficiency)s, %(sleep_score)s, %(is_main_sleep)s, %(awake_count)s, %(awake_duration_ms)s,
-                %(awakenings_count)s, %(restless_count)s, %(restless_duration_ms)s,
-                %(time_in_bed_minutes)s, %(minutes_asleep)s, %(minutes_awake)s,
-                %(minutes_to_fall_asleep)s
+                %(efficiency)s, %(info_code)s, %(log_type)s, %(sleep_type)s, %(sleep_score)s,
+                %(is_main_sleep)s, %(awakenings_count)s, %(time_in_bed_minutes)s,
+                %(minutes_asleep)s, %(minutes_awake)s, %(minutes_to_fall_asleep)s,
+                %(minutes_after_wakeup)s
             )
         """
 
@@ -127,29 +123,32 @@ class SleepSync:
             'end_time': end_time,
             'duration_ms': session['duration'],
             'efficiency': session.get('efficiency'),
+            'info_code': session.get('infoCode', 0),
+            'log_type': session.get('logType'),
+            'sleep_type': session.get('type'),
             'sleep_score': sleep_score,
             'is_main_sleep': session.get('isMainSleep', True),
-            'awake_count': session.get('awakeCount'),
-            'awake_duration_ms': session.get('awakeDuration'),
             'awakenings_count': session.get('awakeningsCount'),
-            'restless_count': session.get('restlessCount'),
-            'restless_duration_ms': session.get('restlessDuration'),
             'time_in_bed_minutes': session.get('timeInBed'),
             'minutes_asleep': session.get('minutesAsleep'),
             'minutes_awake': session.get('minutesAwake'),
             'minutes_to_fall_asleep': session.get('minutesToFallAsleep'),
+            'minutes_after_wakeup': session.get('minutesAfterWakeup'),
         }
 
         cursor.execute(sql, params)
 
-        # Insert minute-by-minute sleep data if available
+        # Insert minute-by-minute sleep data - only stages format is supported now
         if 'levels' in session and 'data' in session['levels']:
             self._insert_sleep_minutes(cursor, session['logId'], session['levels']['data'], start_time)
-        elif 'minuteData' in session:
-            self._insert_sleep_minutes_classic(cursor, session['logId'], session['minuteData'], session['dateOfSleep'])
 
     def _calculate_sleep_score(self, session: Dict[str, Any]) -> int:
-        """Calculate a sleep quality score (0-100) based on duration, efficiency, and restoration.
+        """Calculate a sleep quality score (0-100) based on Fitbit's algorithm.
+        
+        Fitbit's sleep score has 3 components:
+        - Duration (50 points): Time asleep compared to goal
+        - Composition (25 points): Deep & REM sleep percentages
+        - Restoration (25 points): Sleep efficiency and interruptions
 
         Args:
             session: Sleep session data from Fitbit API.
@@ -159,30 +158,71 @@ class SleepSync:
         """
         minutes_asleep = session.get('minutesAsleep', 0)
         efficiency = session.get('efficiency', 0)
-        awake_count = session.get('awakeCount', 0)
-        restless_count = session.get('restlessCount', 0)
-        minutes_to_fall_asleep = session.get('minutesToFallAsleep', 0)
 
-        # Duration Score (0-100): optimal is 7-9 hours
+        # ==== DURATION SCORE (50 points max) ====
+        # Fitbit scores based on comparison to goal (typically 7-9 hours)
+        # 6.77 hours → 41/50 points, 4.43 hours → ~27/50 points
         duration_hours = minutes_asleep / 60
         if 7 <= duration_hours <= 9:
-            duration_score = 100
+            duration_score = 50
         elif duration_hours < 7:
-            # Penalty for too little sleep: lose 20 points per hour under 7
-            duration_score = max(0, 100 - ((7 - duration_hours) * 20))
+            # Score drops off with sleep under 7 hours
+            # Using observed pattern: roughly 50 * (hours/7)^1.15
+            duration_score = 50 * ((duration_hours / 7) ** 1.15)
         else:
-            # Penalty for too much sleep: lose 20 points per hour over 9
-            duration_score = max(0, 100 - ((duration_hours - 9) * 20))
+            # Penalty for over 9 hours
+            duration_score = max(0, 50 - ((duration_hours - 9) * 8))
 
-        # Quality Score: Sleep efficiency percentage
-        quality_score = efficiency or 0
+        # ==== COMPOSITION SCORE (25 points max) ====
+        # Based on Deep & REM sleep percentages
+        if 'levels' in session and 'summary' in session['levels']:
+            summary = session['levels']['summary']
+            deep_min = summary.get('deep', {}).get('minutes', 0)
+            rem_min = summary.get('rem', {}).get('minutes', 0)
+            
+            deep_pct = (deep_min / minutes_asleep * 100) if minutes_asleep > 0 else 0
+            rem_pct = (rem_min / minutes_asleep * 100) if minutes_asleep > 0 else 0
+            
+            # Deep sleep: optimal 13-23%
+            if 13 <= deep_pct <= 23:
+                deep_score = 12.5
+            elif deep_pct < 13:
+                deep_score = 12.5 * (deep_pct / 13)
+            else:
+                deep_score = max(0, 12.5 - (deep_pct - 23) * 1.5)
+            
+            # REM sleep: optimal 20-25%
+            if 20 <= rem_pct <= 25:
+                rem_score = 12.5
+            elif rem_pct < 20:
+                rem_score = 12.5 * (rem_pct / 20)
+            else:
+                rem_score = max(0, 12.5 - (rem_pct - 25) * 1.5)
+            
+            composition_score = deep_score + rem_score
+        else:
+            # Fallback if no detailed stages available
+            composition_score = 20
 
-        # Restoration Score: based on interruptions
-        interruption_penalty = min(50, (awake_count * 5) + (restless_count * 2))
-        restoration_score = max(0, 100 - interruption_penalty - (minutes_to_fall_asleep * 2))
+        # ==== RESTORATION SCORE (25 points max) ====
+        # Based on sleep efficiency and wake time
+        if 'levels' in session and 'summary' in session['levels']:
+            wake_min = session['levels']['summary'].get('wake', {}).get('minutes', 0)
+            wake_pct = (wake_min / minutes_asleep * 100) if minutes_asleep > 0 else 0
+            
+            # Efficiency component (15 points)
+            efficiency_score = (efficiency / 100) * 15
+            
+            # Wake penalty component (10 points)
+            wake_score = max(0, 10 - (wake_pct * 2))
+            
+            restoration_score = efficiency_score + wake_score
+        else:
+            # Fallback: use efficiency only
+            restoration_score = (efficiency / 100) * 25
 
-        # Weighted average: Duration 30%, Quality 40%, Restoration 30%
-        sleep_score = (duration_score * 0.30) + (quality_score * 0.40) + (restoration_score * 0.30)
+        # Total score
+        sleep_score = duration_score + composition_score + restoration_score
 
         return int(round(sleep_score))
 
@@ -234,52 +274,6 @@ class SleepSync:
                 except mysql.connector.IntegrityError:
                     # Skip duplicates
                     pass
-
-    def _insert_sleep_minutes_classic(self, cursor, log_id: int, minute_data: List[Dict[str, Any]], date_of_sleep: str):
-        """Insert minute-by-minute sleep stage data (classic format with minuteData).
-
-        Args:
-            cursor: Database cursor.
-            log_id: Sleep session log ID.
-            minute_data: List of minute-by-minute sleep stage data (classic format).
-            date_of_sleep: Date of sleep in YYYY-MM-DD format.
-        """
-        # Sleep stage mapping for classic format
-        # "1" = asleep (light), "2" = restless (awake), "3" = awake
-        stage_map = {
-            '1': 1,  # asleep -> light
-            '2': 0,  # restless -> awake
-            '3': 0,  # awake -> awake
-        }
-
-        sql = """
-            INSERT INTO sleep_minutes (log_id, minute_time, sleep_stage)
-            VALUES (%(log_id)s, %(minute_time)s, %(sleep_stage)s)
-        """
-
-        for entry in minute_data:
-            # Parse time (format is "HH:MM:SS")
-            time_str = entry['dateTime']
-            minute_time = datetime.strptime(f"{date_of_sleep} {time_str}", "%Y-%m-%d %H:%M:%S")
-            
-            # Assume the date_of_sleep is already in the user's local timezone
-            # No conversion needed for classic format as times are relative to the date
-            
-            # Get sleep stage
-            value = entry.get('value', '3')
-            sleep_stage = stage_map.get(value, 0)
-
-            params = {
-                'log_id': log_id,
-                'minute_time': minute_time,
-                'sleep_stage': sleep_stage,
-            }
-
-            try:
-                cursor.execute(sql, params)
-            except mysql.connector.IntegrityError:
-                # Skip duplicates
-                pass
 
 
 def main():
