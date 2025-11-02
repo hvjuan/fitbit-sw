@@ -18,7 +18,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - fitbit-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: fitbit-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=fitbit_admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - db
+    networks:
+      - fitbit-network
+
+networks:
+  fitbit-network:
+    driver: bridge
 
 volumes:
   mariadb_data:
+    driver: local
+  grafana_data:
     driver: local

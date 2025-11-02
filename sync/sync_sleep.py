@@ -8,9 +8,11 @@ Juan Hernandez-Vargas - 2025
 import os
 import sys
 from datetime import datetime
+from datetime import timezone
 from typing import Any
 from typing import Dict
 from typing import List
+from zoneinfo import ZoneInfo
 
 import mysql.connector
 
@@ -68,7 +70,18 @@ class SleepSync:
                 sessions_synced += 1
                 print(f'  ✓ Synced sleep session {sleep_session["logId"]}')
             except mysql.connector.IntegrityError:
-                print(f'  ⊙ Sleep session {sleep_session["logId"]} already exists, skipping')
+                print(f'  ⊙ Sleep session {sleep_session["logId"]} already exists')
+                # Still try to insert minute data if it doesn't exist
+                try:
+                    start_time = datetime.fromisoformat(sleep_session['startTime'].replace('Z', '+00:00'))
+                    if 'levels' in sleep_session and 'data' in sleep_session['levels']:
+                        self._insert_sleep_minutes(cursor, sleep_session['logId'], sleep_session['levels']['data'], start_time)
+                        print(f'    ✓ Added minute-by-minute data')
+                    elif 'minuteData' in sleep_session:
+                        self._insert_sleep_minutes_classic(cursor, sleep_session['logId'], sleep_session['minuteData'], sleep_session['dateOfSleep'])
+                        print(f'    ✓ Added minute-by-minute data')
+                except Exception as e:
+                    print(f'    ⊙ Minute data already exists or error: {str(e)}')
             except Exception as e:
                 print(f'  ✗ Error syncing session {sleep_session["logId"]}: {str(e)}')
 
@@ -86,13 +99,13 @@ class SleepSync:
         sql = """
             INSERT INTO sleep_sessions (
                 log_id, date_of_sleep, start_time, end_time, duration_ms,
-                efficiency, is_main_sleep, awake_count, awake_duration_ms,
+                efficiency, sleep_score, is_main_sleep, awake_count, awake_duration_ms,
                 awakenings_count, restless_count, restless_duration_ms,
                 time_in_bed_minutes, minutes_asleep, minutes_awake,
                 minutes_to_fall_asleep
             ) VALUES (
                 %(log_id)s, %(date_of_sleep)s, %(start_time)s, %(end_time)s, %(duration_ms)s,
-                %(efficiency)s, %(is_main_sleep)s, %(awake_count)s, %(awake_duration_ms)s,
+                %(efficiency)s, %(sleep_score)s, %(is_main_sleep)s, %(awake_count)s, %(awake_duration_ms)s,
                 %(awakenings_count)s, %(restless_count)s, %(restless_duration_ms)s,
                 %(time_in_bed_minutes)s, %(minutes_asleep)s, %(minutes_awake)s,
                 %(minutes_to_fall_asleep)s
@@ -100,8 +113,12 @@ class SleepSync:
         """
 
         # Parse datetime strings
-        start_time = datetime.fromisoformat(session['startTime'].replace('Z', '+00:00'))
-        end_time = datetime.fromisoformat(session['endTime'].replace('Z', '+00:00'))
+        # Fitbit API returns times in user's local timezone (no Z suffix)
+        start_time = datetime.fromisoformat(session['startTime'].replace('.000', ''))
+        end_time = datetime.fromisoformat(session['endTime'].replace('.000', ''))
+        
+        # Calculate sleep score
+        sleep_score = self._calculate_sleep_score(session)
 
         params = {
             'log_id': session['logId'],
@@ -110,6 +127,7 @@ class SleepSync:
             'end_time': end_time,
             'duration_ms': session['duration'],
             'efficiency': session.get('efficiency'),
+            'sleep_score': sleep_score,
             'is_main_sleep': session.get('isMainSleep', True),
             'awake_count': session.get('awakeCount'),
             'awake_duration_ms': session.get('awakeDuration'),
@@ -123,6 +141,141 @@ class SleepSync:
         }
 
         cursor.execute(sql, params)
+
+        # Insert minute-by-minute sleep data if available
+        if 'levels' in session and 'data' in session['levels']:
+            self._insert_sleep_minutes(cursor, session['logId'], session['levels']['data'], start_time)
+        elif 'minuteData' in session:
+            self._insert_sleep_minutes_classic(cursor, session['logId'], session['minuteData'], session['dateOfSleep'])
+
+    def _calculate_sleep_score(self, session: Dict[str, Any]) -> int:
+        """Calculate a sleep quality score (0-100) based on duration, efficiency, and restoration.
+
+        Args:
+            session: Sleep session data from Fitbit API.
+
+        Returns:
+            Sleep score from 0-100.
+        """
+        minutes_asleep = session.get('minutesAsleep', 0)
+        efficiency = session.get('efficiency', 0)
+        awake_count = session.get('awakeCount', 0)
+        restless_count = session.get('restlessCount', 0)
+        minutes_to_fall_asleep = session.get('minutesToFallAsleep', 0)
+
+        # Duration Score (0-100): optimal is 7-9 hours
+        duration_hours = minutes_asleep / 60
+        if 7 <= duration_hours <= 9:
+            duration_score = 100
+        elif duration_hours < 7:
+            # Penalty for too little sleep: lose 20 points per hour under 7
+            duration_score = max(0, 100 - ((7 - duration_hours) * 20))
+        else:
+            # Penalty for too much sleep: lose 20 points per hour over 9
+            duration_score = max(0, 100 - ((duration_hours - 9) * 20))
+
+        # Quality Score: Sleep efficiency percentage
+        quality_score = efficiency or 0
+
+        # Restoration Score: based on interruptions
+        interruption_penalty = min(50, (awake_count * 5) + (restless_count * 2))
+        restoration_score = max(0, 100 - interruption_penalty - (minutes_to_fall_asleep * 2))
+
+        # Weighted average: Duration 30%, Quality 40%, Restoration 30%
+        sleep_score = (duration_score * 0.30) + (quality_score * 0.40) + (restoration_score * 0.30)
+
+        return int(round(sleep_score))
+
+    def _insert_sleep_minutes(self, cursor, log_id: int, minutes_data: List[Dict[str, Any]], start_time: datetime):
+        """Insert minute-by-minute sleep stage data (new format with levels.data).
+
+        Args:
+            cursor: Database cursor.
+            log_id: Sleep session log ID.
+            minutes_data: List of minute-by-minute sleep stage data.
+            start_time: Sleep session start time.
+        """
+        # Sleep stage mapping (Fitbit API values to our schema)
+        stage_map = {
+            'wake': 0,
+            'light': 1,
+            'deep': 2,
+            'rem': 3,
+        }
+
+        sql = """
+            INSERT INTO sleep_minutes (log_id, minute_time, sleep_stage)
+            VALUES (%(log_id)s, %(minute_time)s, %(sleep_stage)s)
+        """
+
+        for entry in minutes_data:
+            stage = entry.get('level', 'wake').lower()
+            sleep_stage = stage_map.get(stage, 0)
+            # Fitbit API returns times in user's local timezone
+            minute_time = datetime.fromisoformat(entry['dateTime'].replace('.000', '').replace('Z', '+00:00'))
+            
+            # If it has timezone info (Z suffix), convert to local
+            if minute_time.tzinfo:
+                ny_tz = ZoneInfo('America/New_York')
+                minute_time = minute_time.astimezone(ny_tz).replace(tzinfo=None)
+
+            params = {
+                'log_id': log_id,
+                'minute_time': minute_time,
+                'sleep_stage': sleep_stage,
+            }
+
+            try:
+                cursor.execute(sql, params)
+            except mysql.connector.IntegrityError:
+                # Skip duplicates
+                pass
+
+    def _insert_sleep_minutes_classic(self, cursor, log_id: int, minute_data: List[Dict[str, Any]], date_of_sleep: str):
+        """Insert minute-by-minute sleep stage data (classic format with minuteData).
+
+        Args:
+            cursor: Database cursor.
+            log_id: Sleep session log ID.
+            minute_data: List of minute-by-minute sleep stage data (classic format).
+            date_of_sleep: Date of sleep in YYYY-MM-DD format.
+        """
+        # Sleep stage mapping for classic format
+        # "1" = asleep (light), "2" = restless (awake), "3" = awake
+        stage_map = {
+            '1': 1,  # asleep -> light
+            '2': 0,  # restless -> awake
+            '3': 0,  # awake -> awake
+        }
+
+        sql = """
+            INSERT INTO sleep_minutes (log_id, minute_time, sleep_stage)
+            VALUES (%(log_id)s, %(minute_time)s, %(sleep_stage)s)
+        """
+
+        for entry in minute_data:
+            # Parse time (format is "HH:MM:SS")
+            time_str = entry['dateTime']
+            minute_time = datetime.strptime(f"{date_of_sleep} {time_str}", "%Y-%m-%d %H:%M:%S")
+            
+            # Assume the date_of_sleep is already in the user's local timezone
+            # No conversion needed for classic format as times are relative to the date
+            
+            # Get sleep stage
+            value = entry.get('value', '3')
+            sleep_stage = stage_map.get(value, 0)
+
+            params = {
+                'log_id': log_id,
+                'minute_time': minute_time,
+                'sleep_stage': sleep_stage,
+            }
+
+            try:
+                cursor.execute(sql, params)
+            except mysql.connector.IntegrityError:
+                # Skip duplicates
+                pass
 
 
 def main():
